@@ -41,6 +41,7 @@ export default function UploadContract() {
           {
             user_id: user.id,
             file_name: file.name,
+            storage_path: filePath,
             contract_name: contractName || file.name,
             expiry_date: expiryDate || null,
             notes: notes || null,
