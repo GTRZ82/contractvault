@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 export default function UploadContract() {
   const [message, setMessage] = useState('')
   const [contractName, setContractName] = useState('')
+  const [counterparty, setCounterparty] = useState('')
   const [expiryDate, setExpiryDate] = useState('')
   const [notes, setNotes] = useState('')
 
@@ -43,6 +44,7 @@ export default function UploadContract() {
             file_name: file.name,
             storage_path: filePath,
             contract_name: contractName || file.name,
+            counterparty: counterparty || null,
             expiry_date: expiryDate || null,
             notes: notes || null,
           },
@@ -54,6 +56,7 @@ export default function UploadContract() {
       }
 
       setContractName('')
+      setCounterparty('')
       setExpiryDate('')
       setNotes('')
 
@@ -72,6 +75,15 @@ export default function UploadContract() {
           placeholder="Contract Name"
           value={contractName}
           onChange={(e) => setContractName(e.target.value)}
+        />
+      </div>
+
+      <div style={{ marginBottom: '10px' }}>
+        <input
+          type="text"
+          placeholder="Counterparty"
+          value={counterparty}
+          onChange={(e) => setCounterparty(e.target.value)}
         />
       </div>
 
