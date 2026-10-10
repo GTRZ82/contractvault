@@ -14,19 +14,16 @@ export default function MyList() {
   const [contracts, setContracts] = useState<Contract[]>([])
   const [search, setSearch] = useState('')
 
-  const [editingId, setEditingId] = useState<string | null>(null)
-
+  const [editingId, setEditingId] = useState<string | null>(
+    null
+  )
   const [editContractName, setEditContractName] =
     useState('')
-
   const [editCounterparty, setEditCounterparty] =
     useState('')
-
   const [editExpiryDate, setEditExpiryDate] =
     useState('')
-
-  const [editNotes, setEditNotes] =
-    useState('')
+  const [editNotes, setEditNotes] = useState('')
 
   useEffect(() => {
     loadContracts()
@@ -36,6 +33,7 @@ export default function MyList() {
     const { data, error } = await supabase
       .from('contracts')
       .select('*')
+      .order('expiry_date', { ascending: true })
 
     if (error) {
       console.error(error)
@@ -47,22 +45,18 @@ export default function MyList() {
 
   function startEditing(contract: Contract) {
     setEditingId(contract.id)
+    setEditContractName(contract.contract_name || '')
+    setEditCounterparty(contract.counterparty || '')
+    setEditExpiryDate(contract.expiry_date || '')
+    setEditNotes(contract.notes || '')
+  }
 
-    setEditContractName(
-      contract.contract_name || ''
-    )
-
-    setEditCounterparty(
-      contract.counterparty || ''
-    )
-
-    setEditExpiryDate(
-      contract.expiry_date || ''
-    )
-
-    setEditNotes(
-      contract.notes || ''
-    )
+  function cancelEditing() {
+    setEditingId(null)
+    setEditContractName('')
+    setEditCounterparty('')
+    setEditExpiryDate('')
+    setEditNotes('')
   }
 
   async function saveContract() {
@@ -72,7 +66,7 @@ export default function MyList() {
       .from('contracts')
       .update({
         contract_name: editContractName,
-        counterparty: editCounterparty,
+        counterparty: editCounterparty || null,
         expiry_date: editExpiryDate || null,
         notes: editNotes || null,
       })
@@ -83,8 +77,8 @@ export default function MyList() {
       return
     }
 
-    setEditingId(null)
-    loadContracts()
+    cancelEditing()
+    await loadContracts()
   }
 
   async function openContract(
@@ -107,81 +101,158 @@ export default function MyList() {
     window.open(data.signedUrl, '_blank')
   }
 
-  async function deleteContract(
-    contractId: string
-  ) {
+  async function deleteContract(contract: Contract) {
     const confirmed = window.confirm(
-      'Delete this contract?'
+      `Delete "${contract.contract_name}"?`
     )
 
     if (!confirmed) return
 
-    const { error } = await supabase
+    if (contract.storage_path) {
+      const { error: storageError } =
+        await supabase.storage
+          .from('contracts')
+          .remove([contract.storage_path])
+
+      if (storageError) {
+        console.error(storageError)
+      }
+    }
+
+    const { error: databaseError } = await supabase
       .from('contracts')
       .delete()
-      .eq('id', contractId)
+      .eq('id', contract.id)
 
-    if (error) {
-      alert(error.message)
+    if (databaseError) {
+      alert(databaseError.message)
       return
     }
 
-    loadContracts()
+    await loadContracts()
+  }
+
+  function getDaysRemaining(
+    expiryDate: string | null
+  ) {
+    if (!expiryDate) return null
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const expiry = new Date(
+      `${expiryDate}T00:00:00`
+    )
+
+    return Math.ceil(
+      (expiry.getTime() - today.getTime()) /
+        (1000 * 60 * 60 * 24)
+    )
+  }
+
+  function getBorderColor(
+    expiryDate: string | null
+  ) {
+    const days = getDaysRemaining(expiryDate)
+
+    if (days === null) return '#94a3b8'
+    if (days <= 30) return '#ef4444'
+    if (days <= 90) return '#f59e0b'
+
+    return '#22c55e'
+  }
+
+  function getStatusText(
+    expiryDate: string | null
+  ) {
+    const days = getDaysRemaining(expiryDate)
+
+    if (days === null) {
+      return '⚪ No expiry date'
+    }
+
+    if (days < 0) {
+      return `🔴 Expired ${Math.abs(days)} days ago`
+    }
+
+    if (days === 0) {
+      return '🔴 Expires today'
+    }
+
+    if (days <= 30) {
+      return `🔴 ${days} days remaining`
+    }
+
+    if (days <= 90) {
+      return `🟠 ${days} days remaining`
+    }
+
+    return `🟢 ${days} days remaining`
+  }
+
+  function formatDate(
+    expiryDate: string | null
+  ) {
+    if (!expiryDate) return ''
+
+    return new Date(
+      `${expiryDate}T00:00:00`
+    ).toLocaleDateString('de-CH')
   }
 
   const filteredContracts = contracts.filter(
     (contract) => {
-      const txt = search.toLowerCase()
+      const searchText = search
+        .trim()
+        .toLowerCase()
+
+      if (!searchText) return true
 
       return (
         contract.contract_name
           ?.toLowerCase()
-          .includes(txt) ||
+          .includes(searchText) ||
         contract.counterparty
           ?.toLowerCase()
-          .includes(txt) ||
+          .includes(searchText) ||
         contract.notes
           ?.toLowerCase()
-          .includes(txt)
+          .includes(searchText)
       )
     }
   )
 
   const activeContracts = contracts.filter(
     (contract) => {
-      if (!contract.expiry_date) return true
-
-      return (
-        new Date(contract.expiry_date) >
-        new Date()
+      const days = getDaysRemaining(
+        contract.expiry_date
       )
+
+      return days === null || days > 0
     }
   ).length
 
   const expiringSoon = contracts.filter(
     (contract) => {
-      if (!contract.expiry_date) return false
-
-      const today = new Date()
-      const expiry = new Date(contract.expiry_date)
-
-      const days = Math.ceil(
-        (expiry.getTime() - today.getTime()) /
-          (1000 * 60 * 60 * 24)
+      const days = getDaysRemaining(
+        contract.expiry_date
       )
 
-      return days > 0 && days <= 30
+      return (
+        days !== null &&
+        days > 0 &&
+        days <= 30
+      )
     }
   ).length
 
   const expiredContracts = contracts.filter(
     (contract) => {
-      if (!contract.expiry_date) return false
-
-      return (
-        new Date(contract.expiry_date) <=
-        new Date()
+      const days = getDaysRemaining(
+        contract.expiry_date
       )
+
+      return days !== null && days <= 0
     }
   ).length
 
@@ -190,6 +261,7 @@ export default function MyList() {
       <div
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
           gap: '20px',
           marginBottom: '25px',
           justifyContent: 'center',
@@ -213,6 +285,7 @@ export default function MyList() {
           >
             {activeContracts}
           </h3>
+
           <p>🟢 Active Contracts</p>
         </div>
 
@@ -234,6 +307,7 @@ export default function MyList() {
           >
             {expiringSoon}
           </h3>
+
           <p>🟠 Expiring in 30 Days</p>
         </div>
 
@@ -255,6 +329,7 @@ export default function MyList() {
           >
             {expiredContracts}
           </h3>
+
           <p>🔴 Expired</p>
         </div>
       </div>
@@ -264,155 +339,196 @@ export default function MyList() {
           type="text"
           placeholder="🔍 Search contracts..."
           value={search}
-          onChange={(e) =>
-            setSearch(e.target.value)
+          onChange={(event) =>
+            setSearch(event.target.value)
           }
+          style={{
+            width: '100%',
+            maxWidth: '400px',
+            padding: '10px',
+            border: '1px solid #ccc',
+            borderRadius: '8px',
+            boxSizing: 'border-box',
+          }}
         />
       </div>
 
-      {filteredContracts.map((contract) => (
-        <div
-          key={contract.id}
-          style={{
-            border: '1px solid #ccc',
-            borderRadius: '8px',
-            padding: '10px',
-            marginBottom: '10px',
-          }}
-        >
-          {editingId === contract.id ? (
-            <>
-              <input
-                type="text"
-                value={editContractName}
-                onChange={(e) =>
-                  setEditContractName(
-                    e.target.value
-                  )
-                }
-              />
-
-              <br />
-              <br />
-
-              <input
-                type="text"
-                value={editCounterparty}
-                onChange={(e) =>
-                  setEditCounterparty(
-                    e.target.value
-                  )
-                }
-              />
-
-              <br />
-              <br />
-
-              <input
-                type="date"
-                value={editExpiryDate}
-                onChange={(e) =>
-                  setEditExpiryDate(
-                    e.target.value
-                  )
-                }
-              />
-
-              <br />
-              <br />
-
-              <textarea
-                rows={4}
-                cols={40}
-                value={editNotes}
-                onChange={(e) =>
-                  setEditNotes(
-                    e.target.value
-                  )
-                }
-              />
-
-              <br />
-              <br />
-
-              <button onClick={saveContract}>
-                Save
-              </button>
-
-              <button
-                onClick={() =>
-                  setEditingId(null)
-                }
-                style={{
-                  marginLeft: '10px',
-                }}
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <>
-              <h3>
-                📄 {contract.contract_name}
-              </h3>
-
-              {contract.counterparty && (
-                <p>
-                  🏢 {contract.counterparty}
-                </p>
-              )}
-
-              {contract.expiry_date && (
-                <p>
-                  📅 {contract.expiry_date}
-                </p>
-              )}
-
-              {contract.notes && (
-                <p>
-                  📝 {contract.notes}
-                </p>
-              )}
-
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '10px',
-                  marginTop: '10px',
-                }}
-              >
-                <button
-                  onClick={() =>
-                    openContract(
-                      contract.storage_path
-                    )
-                  }
+      {filteredContracts.length === 0 ? (
+        <p>No contracts found.</p>
+      ) : (
+        filteredContracts.map((contract) => (
+          <div
+            key={contract.id}
+            style={{
+              border: `3px solid ${getBorderColor(
+                contract.expiry_date
+              )}`,
+              borderRadius: '10px',
+              padding: '15px',
+              marginBottom: '15px',
+            }}
+          >
+            {editingId === contract.id ? (
+              <>
+                <div
+                  style={{
+                    marginBottom: '10px',
+                  }}
                 >
-                  Open PDF
-                </button>
+                  <input
+                    type="text"
+                    placeholder="Contract Name"
+                    value={editContractName}
+                    onChange={(event) =>
+                      setEditContractName(
+                        event.target.value
+                      )
+                    }
+                  />
+                </div>
 
-                <button
-                  onClick={() =>
-                    startEditing(contract)
-                  }
+                <div
+                  style={{
+                    marginBottom: '10px',
+                  }}
                 >
-                  Edit
-                </button>
+                  <input
+                    type="text"
+                    placeholder="Counterparty"
+                    value={editCounterparty}
+                    onChange={(event) =>
+                      setEditCounterparty(
+                        event.target.value
+                      )
+                    }
+                  />
+                </div>
 
-                <button
-                  onClick={() =>
-                    deleteContract(
-                      contract.id
-                    )
-                  }
+                <div
+                  style={{
+                    marginBottom: '10px',
+                  }}
                 >
-                  Delete
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      ))}
+                  <input
+                    type="date"
+                    value={editExpiryDate}
+                    onChange={(event) =>
+                      setEditExpiryDate(
+                        event.target.value
+                      )
+                    }
+                  />
+                </div>
+
+                <div
+                  style={{
+                    marginBottom: '10px',
+                  }}
+                >
+                  <textarea
+                    rows={4}
+                    cols={40}
+                    placeholder="Notes"
+                    value={editNotes}
+                    onChange={(event) =>
+                      setEditNotes(
+                        event.target.value
+                      )
+                    }
+                  />
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '10px',
+                  }}
+                >
+                  <button onClick={saveContract}>
+                    Save
+                  </button>
+
+                  <button onClick={cancelEditing}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3>
+                  📄 {contract.contract_name}
+                </h3>
+
+                {contract.counterparty && (
+                  <p>
+                    🏢 {contract.counterparty}
+                  </p>
+                )}
+
+                {contract.expiry_date && (
+                  <>
+                    <p>
+                      📅 Expiry Date:{' '}
+                      {formatDate(
+                        contract.expiry_date
+                      )}
+                    </p>
+
+                    <p>
+                      {getStatusText(
+                        contract.expiry_date
+                      )}
+                    </p>
+                  </>
+                )}
+
+                {!contract.expiry_date && (
+                  <p>⚪ No expiry date</p>
+                )}
+
+                {contract.notes && (
+                  <p>📝 {contract.notes}</p>
+                )}
+
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    marginTop: '10px',
+                  }}
+                >
+                  <button
+                    onClick={() =>
+                      openContract(
+                        contract.storage_path
+                      )
+                    }
+                  >
+                    Open PDF
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      startEditing(contract)
+                    }
+                  >
+                    Edit
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      deleteContract(contract)
+                    }
+                  >
+                    Delete
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ))
+      )}
     </div>
   )
 }
