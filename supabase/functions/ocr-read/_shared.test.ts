@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   OCR_MAX_BODY_BYTES,
+  encodeBytesAsBase64,
   getCorsHeaders,
   pollAzureRead,
   submitAzureRead,
@@ -38,6 +39,38 @@ describe('OCR Edge Function validation', () => {
     png.set([0, 0, 0, 1], 20)
     png.set([0x49, 0x45, 0x4e, 0x44], 33)
     expect(validateImage(png, 'image/png')).toEqual({ ok: true })
+  })
+
+  it('submits the JSON Analyze Document overload with base64Source', async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }))
+    const result = await submitAzureRead(
+      'https://example.azure.com',
+      'synthetic-key',
+      'image/png',
+      bytes,
+      Date.now(),
+      58_000,
+      undefined,
+      fetchMock as typeof fetch,
+    )
+
+    expect(result.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(
+      'https://example.azure.com/documentintelligence/documentModels/prebuilt-read:analyze?_overload=analyzeDocument&api-version=2024-11-30',
+    )
+    expect(init?.headers).toEqual({
+      'Ocp-Apim-Subscription-Key': 'synthetic-key',
+      'Content-Type': 'application/json',
+    })
+    expect(typeof init?.body).toBe('string')
+    expect(JSON.parse(init?.body as string)).toEqual({
+      base64Source: encodeBytesAsBase64(bytes),
+    })
+    expect(init?.body).not.toBe(bytes)
+    expect(init?.body).not.toBeInstanceOf(Uint8Array)
   })
 
   it('returns OCR_TIMEOUT after the bounded timeout', async () => {

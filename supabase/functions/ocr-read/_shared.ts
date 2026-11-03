@@ -25,6 +25,16 @@ export function getSafeAzureErrorCode(value: string | null) {
   return value && ALLOWED_AZURE_ERROR_CODES.has(value) ? value : undefined
 }
 
+export function encodeBytesAsBase64(bytes: Uint8Array) {
+  const chunkSize = 0x8000
+  let binary = ''
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return btoa(binary)
+}
+
 export function logOcrDiagnostic(
   stage: string,
   category: string,
@@ -147,11 +157,11 @@ export async function submitAzureRead(
   const timeout = setTimeout(() => controller.abort(), Math.min(15_000, remaining))
   try {
     const response = await fetchImpl(
-      `${endpoint}/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30`,
+      `${endpoint}/documentintelligence/documentModels/prebuilt-read:analyze?_overload=analyzeDocument&api-version=2024-11-30`,
       {
         method: 'POST',
-        headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': contentType },
-        body: bytes,
+        headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64Source: encodeBytesAsBase64(bytes) }),
         signal: controller.signal,
       },
     )
