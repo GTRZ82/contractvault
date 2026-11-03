@@ -1,9 +1,11 @@
-﻿import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { extractPdfText, type ExtractedField } from '../services/extraction/pdfText'
 import { classifyDocument, resolveDocumentType } from '../services/extraction/documentClassifier'
 import { extractInvoice } from '../services/extraction/invoiceExtractor'
 import { extractContract } from '../services/extraction/contractExtractor'
+import { prepareImage, ImagePreparationError } from '../services/imagePreparation'
+import { runOcrImage } from '../services/ocrRead'
 
 function isValidDate(date: string): boolean {
   const parts = date.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/)
@@ -54,6 +56,14 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
   const explicitlySelectedDocumentTypeRef = useRef<'contract' | 'invoice' | null>(null)
   const extractedTextRef = useRef('')
   const extractedFileNameRef = useRef('')
+  const ocrInFlightRef = useRef(false)
+  const ocrCooldownUntilRef = useRef(0)
+  const activeOcrAbortRef = useRef<AbortController | null>(null)
+  const activeOcrOperationRef = useRef(0)
+
+  useEffect(() => {
+    return () => activeOcrAbortRef.current?.abort()
+  }, [])
 
   function fieldStyle(field: string): React.CSSProperties {
     if (lowConfidenceFields.has(field)) return { border: '2px solid #d97706', backgroundColor: '#fffbeb' }
@@ -68,7 +78,7 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
     if (extracted.confidence < 0.9 || extracted.reviewRequired) lowFields.add(field)
   }
 
-  function applyInvoiceExtraction(text: string, fileName: string) {
+  function applyInvoiceExtraction(text: string, fileName: string, fromOcr = false) {
     const extracted = new Set<string>()
     const low = new Set<string>()
 
@@ -101,11 +111,14 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
       if (invoice.paymentStatus.confidence < 0.9 || invoice.paymentStatus.reviewRequired) low.add('paymentStatus')
     }
 
+    if (fromOcr) {
+      for (const field of extracted) low.add(field)
+    }
     setExtractedFields(extracted)
     setLowConfidenceFields(low)
   }
 
-  function applyContractExtraction(text: string, fileName: string) {
+  function applyContractExtraction(text: string, fileName: string, fromOcr = false) {
     const extracted = new Set<string>()
     const low = new Set<string>()
 
@@ -134,6 +147,9 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
       if (contract.autoRenew.confidence < 0.9 || contract.autoRenew.reviewRequired) low.add('autoRenew')
     }
 
+    if (fromOcr) {
+      for (const field of extracted) low.add(field)
+    }
     setExtractedFields(extracted)
     setLowConfidenceFields(low)
   }
@@ -156,10 +172,31 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file || savingRef.current) return
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setMessage('Please select a PDF file.')
+    const lowerName = file.name.toLowerCase()
+    const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf')
+    const isImage = file.type === 'image/jpeg' || file.type === 'image/png' || lowerName.endsWith('.jpg') ||
+      lowerName.endsWith('.jpeg') || lowerName.endsWith('.png')
+    const isExplicitlyUnsupported = ['.webp', '.heic', '.heif'].some((suffix) => lowerName.endsWith(suffix)) ||
+      file.type === 'image/webp' || file.type === 'image/heic' || file.type === 'image/heif'
+
+    if (!isPdf && !isImage) {
+      setMessage(isExplicitlyUnsupported
+        ? 'Unsupported file type. Milestone 1 supports PDF, JPEG/JPG and PNG only.'
+        : 'Please select a PDF, JPEG/JPG or PNG file.')
       event.target.value = ''
       return
+    }
+
+    let operationId = activeOcrOperationRef.current
+    let replacingActiveOcr = false
+    if (isImage) {
+      if (ocrInFlightRef.current) {
+        replacingActiveOcr = true
+        activeOcrAbortRef.current?.abort()
+      }
+      ocrInFlightRef.current = true
+      operationId = ++activeOcrOperationRef.current
+      activeOcrAbortRef.current = new AbortController()
     }
 
     setSelectedPdf(file)
@@ -171,53 +208,84 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
     setExtractionBanner('')
 
     try {
-      const { text } = await extractPdfText(file)
-      if (text.replace(/--- PAGE BREAK ---/g, '').replace(/\s/g, '').length < 40) {
-        setMessage('No readable text was found in this PDF. Manual entry or OCR is required.')
-        setExtractionBanner('')
-        return
+      let text = ''
+      let fromOcr = false
+
+      if (isPdf) {
+        const result = await extractPdfText(file)
+        text = result.text
+        if (text.replace(/--- PAGE BREAK ---/g, '').replace(/\s/g, '').length < 40) {
+          setMessage('No readable text was found in this PDF. Manual entry or OCR is required.')
+          setExtractionBanner('')
+          return
+        }
+      } else {
+        if (!replacingActiveOcr && Date.now() < ocrCooldownUntilRef.current) {
+          throw new Error('OCR_PROVIDER_ERROR')
+        }
+        try {
+          const prepared = await prepareImage(file)
+          const result = await runOcrImage(prepared.blob, file.name, activeOcrAbortRef.current?.signal)
+          text = result.text
+          fromOcr = true
+        } finally {
+          if (operationId === activeOcrOperationRef.current) ocrInFlightRef.current = false
+          ocrCooldownUntilRef.current = Date.now() + 2000
+        }
+
+        if (!text.trim()) {
+          setMessage('OCR could not reliably read this image. Please enter the details manually or try a clearer photo.')
+          setExtractionBanner('')
+          return
+        }
       }
 
       extractedTextRef.current = text
-
       const classification = classifyDocument(text)
-      const selectedType = resolveDocumentType(
-        classification.type,
-        explicitlySelectedDocumentTypeRef.current,
-      )
+      const selectedType = resolveDocumentType(classification.type, explicitlySelectedDocumentTypeRef.current)
 
-      if (!explicitlySelectedDocumentTypeRef.current) {
-        setDocumentType(selectedType)
-      }
+      if (!explicitlySelectedDocumentTypeRef.current) setDocumentType(selectedType)
+      const uncertain = !explicitlySelectedDocumentTypeRef.current && classification.confidence < 0.7
+      setClassificationUncertain(uncertain)
 
-      if (!explicitlySelectedDocumentTypeRef.current && classification.confidence < 0.7) {
-        setClassificationUncertain(true)
-        setExtractionBanner('Document type is uncertain - please confirm Contract or Invoice before saving')
+      if (selectedType === 'invoice') applyInvoiceExtraction(text, file.name, fromOcr)
+      else applyContractExtraction(text, file.name, fromOcr)
+
+      if (fromOcr) {
+        setExtractionBanner('OCR completed. Please review the highlighted fields before saving')
       } else {
-        setClassificationUncertain(false)
+        setExtractionBanner(
+          uncertain
+            ? 'Document type is uncertain - please confirm Contract or Invoice; review extracted values before saving'
+            : 'Extracted from PDF - please review before saving',
+        )
       }
-
-      if (selectedType === 'invoice') {
-        applyInvoiceExtraction(text, file.name)
-      } else {
-        applyContractExtraction(text, file.name)
-      }
-      setExtractionBanner(
-        !explicitlySelectedDocumentTypeRef.current && classification.confidence < 0.7
-          ? 'Document type is uncertain - please confirm Contract or Invoice; review extracted values before saving'
-          : 'Extracted from PDF - please review before saving',
-      )
     } catch (error) {
-      console.error(error instanceof Error ? error.message : 'PDF extraction failed')
-      setMessage('Could not read this PDF. Please enter the details manually.')
+      if (operationId !== activeOcrOperationRef.current && isImage) return
+      if (error instanceof ImagePreparationError) {
+        setMessage(error.message)
+      } else {
+        const code = error instanceof Error ? error.message : ''
+        const safeMessages: Record<string, string> = {
+          OCR_UNAUTHORIZED: 'OCR could not authenticate. Please sign in again and try again.',
+          OCR_INVALID_FILE: 'The image could not be validated. Please choose a clear JPEG or PNG.',
+          OCR_FILE_TOO_LARGE: 'The prepared image is too large. Please choose a smaller image.',
+          OCR_TIMEOUT: 'OCR could not reliably read this image within the time limit. Please try a clearer photo.',
+          OCR_NO_TEXT: 'OCR could not reliably read this image. Please enter the details manually or try a clearer photo.',
+        }
+        setMessage(safeMessages[code] || 'OCR could not complete. Please enter the details manually.')
+      }
     } finally {
-      setIsExtracting(false)
+      if (operationId === activeOcrOperationRef.current) {
+        if (isImage) activeOcrAbortRef.current = null
+        setIsExtracting(false)
+      }
     }
   }
 
   async function saveDocument() {
     if (!selectedPdf || savingRef.current) {
-      if (!selectedPdf) setMessage('Please select a PDF before saving.')
+      if (!selectedPdf) setMessage('Please select a PDF or image before saving.')
       return
     }
 
@@ -322,8 +390,8 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
       )}
 
       <div style={{ marginTop: '18px', borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
-        <label style={{ display: 'grid', gap: '5px', maxWidth: '500px', marginBottom: '12px' }}>PDF file *<input type="file" accept=".pdf,application/pdf" disabled={isSaving || isExtracting} onChange={handleFileChange} /></label>
-        {isExtracting && <p style={{ margin: '0 0 10px 0', color: '#2563eb', fontWeight: 600 }}>Extracting PDF...</p>}
+        <label style={{ display: 'grid', gap: '5px', maxWidth: '500px', marginBottom: '12px' }}>Document file *<input type="file" accept=".pdf,application/pdf,.jpg,.jpeg,.png,image/jpeg,image/png" capture="environment" disabled={isSaving || isExtracting} onChange={handleFileChange} /></label>
+        {isExtracting && <p style={{ margin: '0 0 10px 0', color: '#2563eb', fontWeight: 600 }}>{ocrInFlightRef.current ? 'Running OCR...' : 'Extracting PDF...'}</p>}
         <div className="upload-actions">
           {selectedPdf && <button type="button" className="upload-save-button" onClick={saveDocument} disabled={isSaving || isExtracting}>{isSaving ? 'Uploading...' : 'Upload / Save'}</button>}
           <button type="button" className="upload-cancel-button" onClick={onCancel} disabled={isSaving || isExtracting}>Cancel</button>

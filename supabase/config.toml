@@ -1,0 +1,2 @@
+[functions.ocr-read]
+verify_jwt = true
