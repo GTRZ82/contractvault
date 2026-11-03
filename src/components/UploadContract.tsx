@@ -1,7 +1,7 @@
 ﻿import { useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { extractPdfText, type ExtractedField } from '../services/extraction/pdfText'
-import { classifyDocument } from '../services/extraction/documentClassifier'
+import { classifyDocument, resolveDocumentType } from '../services/extraction/documentClassifier'
 import { extractInvoice } from '../services/extraction/invoiceExtractor'
 import { extractContract } from '../services/extraction/contractExtractor'
 
@@ -51,6 +51,7 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
   const [extractedFields, setExtractedFields] = useState<Set<string>>(new Set())
   const [classificationUncertain, setClassificationUncertain] = useState(false)
   const savingRef = useRef(false)
+  const explicitlySelectedDocumentTypeRef = useRef<'contract' | 'invoice' | null>(null)
   const extractedTextRef = useRef('')
   const extractedFileNameRef = useRef('')
 
@@ -138,6 +139,7 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
   }
 
   function handleDocumentTypeChange(type: 'contract' | 'invoice') {
+    explicitlySelectedDocumentTypeRef.current = type
     setDocumentType(type)
     if (!classificationUncertain || !extractedTextRef.current) return
 
@@ -179,22 +181,32 @@ export default function UploadContract({ onDocumentSaved, onCancel }: UploadCont
       extractedTextRef.current = text
 
       const classification = classifyDocument(text)
-      setDocumentType(classification.type)
-      if (classification.confidence < 0.7) {
+      const selectedType = resolveDocumentType(
+        classification.type,
+        explicitlySelectedDocumentTypeRef.current,
+      )
+
+      if (!explicitlySelectedDocumentTypeRef.current) {
+        setDocumentType(selectedType)
+      }
+
+      if (!explicitlySelectedDocumentTypeRef.current && classification.confidence < 0.7) {
         setClassificationUncertain(true)
         setExtractionBanner('Document type is uncertain - please confirm Contract or Invoice before saving')
       } else {
         setClassificationUncertain(false)
       }
 
-      if (classification.type === 'invoice') {
+      if (selectedType === 'invoice') {
         applyInvoiceExtraction(text, file.name)
       } else {
         applyContractExtraction(text, file.name)
       }
-      setExtractionBanner(classification.confidence < 0.7
-        ? 'Document type is uncertain - please confirm Contract or Invoice; review extracted values before saving'
-        : 'Extracted from PDF - please review before saving')
+      setExtractionBanner(
+        !explicitlySelectedDocumentTypeRef.current && classification.confidence < 0.7
+          ? 'Document type is uncertain - please confirm Contract or Invoice; review extracted values before saving'
+          : 'Extracted from PDF - please review before saving',
+      )
     } catch (error) {
       console.error(error instanceof Error ? error.message : 'PDF extraction failed')
       setMessage('Could not read this PDF. Please enter the details manually.')

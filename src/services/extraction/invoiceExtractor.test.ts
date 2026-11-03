@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyDocument } from './documentClassifier'
+import { classifyDocument, resolveDocumentType } from './documentClassifier'
 import { extractInvoice } from './invoiceExtractor'
 import { extractContract } from './contractExtractor'
 
@@ -18,6 +18,20 @@ Payment recipient: Groupe Mutuel Assicurazioni GMA SA
 Swiss payment section
 CHF 244.45
 `
+
+describe('user-selected document type precedence', () => {
+  it('keeps Invoice selected instead of an Invoice-classified PDF', () => {
+    expect(resolveDocumentType('contract', 'invoice')).toBe('invoice')
+  })
+
+  it('keeps Contract selected instead of an Invoice-classified PDF', () => {
+    expect(resolveDocumentType('invoice', 'contract')).toBe('contract')
+  })
+
+  it('uses classifier selection before the user makes an explicit choice', () => {
+    expect(resolveDocumentType('invoice', null)).toBe('invoice')
+  })
+})
 
 describe('real Italian insurance invoice extraction', () => {
   it('classifies the document as an invoice and extracts the expected fields', () => {

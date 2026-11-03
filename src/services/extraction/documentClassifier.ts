@@ -1,5 +1,12 @@
 export type DocumentType = 'contract' | 'invoice'
 
+export function resolveDocumentType(
+  classification: DocumentType,
+  explicitlySelected: DocumentType | null,
+): DocumentType {
+  return explicitlySelected ?? classification
+}
+
 export function classifyDocument(text: string): { type: DocumentType; confidence: number } {
   const normalized = text.toLowerCase()
 
