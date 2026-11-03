@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import {
+  isActiveContract,
+  isCancellationApproaching,
+  isExpiredContract,
+  isOverdueInvoice,
+  isPaidInvoice,
+  isUnpaidInvoice,
+  matchesDashboardStatus,
+  parseDateParts,
+  type DashboardStatusFilter,
+} from '../services/dashboardStatus'
 
 interface Contract {
   id: string
@@ -24,26 +35,6 @@ interface Contract {
   currency: string | null
   payment_reference: string | null
   payment_status: 'unpaid' | 'paid' | 'overdue' | null
-}
-
-function parseDateParts(date: string): { year: number; month: number; day: number } | null {
-  const parts = date.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/)
-  if (!parts) return null
-
-  const year = Number(parts[1])
-  const month = Number(parts[2])
-  const day = Number(parts[3])
-  const parsed = new Date(year, month - 1, day)
-
-  if (
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day
-  ) {
-    return null
-  }
-
-  return { year, month, day }
 }
 
 function formatDate(date: string): string | null {
@@ -119,6 +110,7 @@ export default function MyList() {
   const [contracts, setContracts] = useState<Contract[]>([])
   const [search, setSearch] = useState('')
   const [documentFilter, setDocumentFilter] = useState<'all' | 'contract' | 'invoice'>('all')
+  const [statusFilter, setStatusFilter] = useState<DashboardStatusFilter | null>(null)
 
   const [editingId, setEditingId] = useState<string | null>(null)
 
@@ -444,6 +436,7 @@ const [deleteMessage, setDeleteMessage] = useState('')
       const isInvoice = contract.document_type === 'invoice'
       if (documentFilter === 'contract' && isInvoice) return false
       if (documentFilter === 'invoice' && !isInvoice) return false
+      if (statusFilter && !matchesDashboardStatus(contract, statusFilter)) return false
 
       if (isInvoice) {
         return (
@@ -485,67 +478,30 @@ const [deleteMessage, setDeleteMessage] = useState('')
     }
   )
 
-  const activeContracts = contracts.filter(
-    (contract) => {
-      if (contract.document_type === 'invoice') return false
-      if (!contract.expiry_date) return true
+  const activeContracts = contracts.filter((contract) => isActiveContract(contract)).length
+  const expiringSoon = contracts.filter((contract) => isCancellationApproaching(contract)).length
+  const expiredContracts = contracts.filter((contract) => isExpiredContract(contract)).length
+  const unpaidInvoices = contracts.filter((contract) => isUnpaidInvoice(contract)).length
+  const paidInvoices = contracts.filter((contract) => isPaidInvoice(contract)).length
+  const overdueInvoices = contracts.filter((contract) => isOverdueInvoice(contract)).length
 
-      return (
-        new Date(contract.expiry_date) >
-        new Date()
-      )
-    }
-  ).length
+  function selectStatusFilter(
+    filter: DashboardStatusFilter,
+    documentType: 'contract' | 'invoice',
+  ) {
+    setSearch('')
+    setDocumentFilter(documentType)
+    setStatusFilter(filter)
+    window.requestAnimationFrame(() => {
+      document.getElementById('my-documents-filter')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
 
-  const expiringSoon = contracts.filter(
-    (contract) => {
-      if (contract.document_type === 'invoice') return false
-      if (!contract.expiry_date) return false
-
-      const today = new Date()
-      const expiry = new Date(contract.expiry_date)
-
-      const days = Math.ceil(
-        (expiry.getTime() - today.getTime()) /
-          (1000 * 60 * 60 * 24)
-      )
-
-      return days > 0 && days <= 30
-    }
-  ).length
-
-  const expiredContracts = contracts.filter(
-    (contract) => {
-      if (contract.document_type === 'invoice') return false
-      if (!contract.expiry_date) return false
-
-      return (
-        new Date(contract.expiry_date) <=
-        new Date()
-      )
-    }
-  ).length
-
-  const unpaidInvoices = contracts.filter(
-    (contract) => contract.document_type === 'invoice' && contract.payment_status === 'unpaid'
-  ).length
-
-  const paidInvoices = contracts.filter(
-    (contract) => contract.document_type === 'invoice' && contract.payment_status === 'paid'
-  ).length
-
-  const overdueInvoices = contracts.filter((contract) => {
-    if (contract.document_type !== 'invoice') return false
-    if (contract.payment_status === 'overdue') return true
-    if (contract.payment_status !== 'unpaid' || !contract.due_date) return false
-
-    const dueParts = parseDateParts(contract.due_date)
-    if (!dueParts) return false
-    const dueDate = new Date(dueParts.year, dueParts.month - 1, dueParts.day)
-    const today = new Date()
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-    return dueDate < todayStart
-  }).length
+  function clearStatusFilter() {
+    setSearch('')
+    setStatusFilter(null)
+    setDocumentFilter('all')
+  }
 
   return (
     <div>
@@ -569,41 +525,47 @@ const [deleteMessage, setDeleteMessage] = useState('')
         <section className="overview-section" style={{ minWidth: 0, border: '1px solid #e3e8f0', borderRadius: '12px', padding: '14px', background: '#fff', boxSizing: 'border-box' }}>
           <h3 style={{ margin: '0 0 12px 0', fontSize: '15px', color: '#1d4ed8', letterSpacing: '0.04em' }}>CONTRACTS</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', width: '100%', boxSizing: 'border-box' }}>
-            <div className="metric-card metric-green" style={{ border: '1px solid #b7dfc3', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box' }}>
+            <button type="button" className="metric-card metric-green" aria-label={`Show ${activeContracts} active contracts`} onClick={(event) => { event.preventDefault(); selectStatusFilter('active-contract', 'contract') }} style={{ border: '1px solid #b7dfc3', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box', font: 'inherit', width: '100%' }}>
               <h3 style={{ color: '#22c55e', fontSize: '32px', margin: 0 }}>{activeContracts}</h3>
               <p style={{ margin: '8px 0 0 0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>🟢 Active Contracts</p>
-            </div>
-            <div className="metric-card metric-amber" style={{ border: '1px solid #ecd39a', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box' }}>
+              <span className="metric-card-action">View →</span>
+            </button>
+            <button type="button" className="metric-card metric-amber" aria-label={`Show ${expiringSoon} contracts with cancellation approaching`} onClick={(event) => { event.preventDefault(); selectStatusFilter('approaching-contract', 'contract') }} style={{ border: '1px solid #ecd39a', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box', font: 'inherit', width: '100%' }}>
               <h3 style={{ color: '#f59e0b', fontSize: '32px', margin: 0 }}>{expiringSoon}</h3>
               <p style={{ margin: '8px 0 0 0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>🟠 Cancellation Approaching</p>
-            </div>
-            <div className="metric-card metric-red" style={{ border: '1px solid #efb8b8', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box' }}>
+              <span className="metric-card-action">View →</span>
+            </button>
+            <button type="button" className="metric-card metric-red" aria-label={`Show ${expiredContracts} expired or missed contracts`} onClick={(event) => { event.preventDefault(); selectStatusFilter('expired-contract', 'contract') }} style={{ border: '1px solid #efb8b8', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box', font: 'inherit', width: '100%' }}>
               <h3 style={{ color: '#ef4444', fontSize: '32px', margin: 0 }}>{expiredContracts}</h3>
               <p style={{ margin: '8px 0 0 0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>🔴 Expired / Missed</p>
-            </div>
+              <span className="metric-card-action">View →</span>
+            </button>
           </div>
         </section>
 
         <section className="overview-section" style={{ minWidth: 0, border: '1px solid #e3e8f0', borderRadius: '12px', padding: '14px', background: '#fff', boxSizing: 'border-box' }}>
           <h3 style={{ margin: '0 0 12px 0', fontSize: '15px', color: '#15803d', letterSpacing: '0.04em' }}>INVOICES</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', width: '100%', boxSizing: 'border-box' }}>
-            <div className="metric-card metric-amber" style={{ border: '1px solid #ecd39a', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box' }}>
+            <button type="button" className="metric-card metric-amber" aria-label={`Show ${unpaidInvoices} unpaid invoices`} onClick={(event) => { event.preventDefault(); selectStatusFilter('unpaid-invoice', 'invoice') }} style={{ border: '1px solid #ecd39a', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box', font: 'inherit', width: '100%' }}>
               <h3 style={{ color: '#d97706', fontSize: '32px', margin: 0 }}>{unpaidInvoices}</h3>
               <p style={{ margin: '8px 0 0 0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>🟡 Unpaid Invoices</p>
-            </div>
-            <div className="metric-card metric-red" style={{ border: '1px solid #efb8b8', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box' }}>
+              <span className="metric-card-action">View →</span>
+            </button>
+            <button type="button" className="metric-card metric-red" aria-label={`Show ${overdueInvoices} overdue invoices`} onClick={(event) => { event.preventDefault(); selectStatusFilter('overdue-invoice', 'invoice') }} style={{ border: '1px solid #efb8b8', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box', font: 'inherit', width: '100%' }}>
               <h3 style={{ color: '#dc2626', fontSize: '32px', margin: 0 }}>{overdueInvoices}</h3>
               <p style={{ margin: '8px 0 0 0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>🔴 Overdue Invoices</p>
-            </div>
-            <div className="metric-card metric-green" style={{ border: '1px solid #b7dfc3', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box' }}>
+              <span className="metric-card-action">View →</span>
+            </button>
+            <button type="button" className="metric-card metric-green" aria-label={`Show ${paidInvoices} paid invoices`} onClick={(event) => { event.preventDefault(); selectStatusFilter('paid-invoice', 'invoice') }} style={{ border: '1px solid #b7dfc3', borderRadius: '10px', padding: '12px 8px', minWidth: 0, textAlign: 'center', boxSizing: 'border-box', font: 'inherit', width: '100%' }}>
               <h3 style={{ color: '#16a34a', fontSize: '32px', margin: 0 }}>{paidInvoices}</h3>
               <p style={{ margin: '8px 0 0 0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>🟢 Paid Invoices</p>
-            </div>
+              <span className="metric-card-action">View →</span>
+            </button>
           </div>
         </section>
       </div>
 
-      <div className="document-toolbar" style={{ marginBottom: '20px' }}>
+      <div id="my-documents-filter" className="document-toolbar" style={{ marginBottom: '20px' }}>
         <input
           type="text"
           placeholder="🔍 Search contracts and invoices..."
@@ -622,16 +584,41 @@ const [deleteMessage, setDeleteMessage] = useState('')
               type="button"
               className={`document-filter-button${documentFilter === value ? ' active' : ''}`}
               aria-pressed={documentFilter === value}
-              onClick={() => setDocumentFilter(value)}
+              onClick={() => {
+                setStatusFilter(null)
+                setDocumentFilter(value)
+              }}
             >{label}</button>
           ))}
         </div>
       </div>
 
+      {statusFilter && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '16px', padding: '10px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', background: '#f8fafc' }}>
+          <strong style={{ color: '#1e3a5f' }}>
+            Active filter: {
+              statusFilter === 'active-contract' ? 'Active Contracts' :
+              statusFilter === 'approaching-contract' ? 'Cancellation Approaching' :
+              statusFilter === 'expired-contract' ? 'Expired / Missed' :
+              statusFilter === 'unpaid-invoice' ? 'Unpaid Invoices' :
+              statusFilter === 'overdue-invoice' ? 'Overdue Invoices' :
+              'Paid Invoices'
+            }
+          </strong>
+          <button type="button" className="secondary-action" onClick={clearStatusFilter}>Clear filter</button>
+        </div>
+      )}
+
       {deleteMessage && (
         <p style={{ marginBottom: '15px', fontWeight: 'bold' }}>
           {deleteMessage}
         </p>
+      )}
+
+      {filteredContracts.length === 0 && (
+        <div style={{ padding: '24px', border: '1px solid #e5e7eb', borderRadius: '10px', background: '#fff', color: '#667085', textAlign: 'center' }}>
+          No documents match this filter.
+        </div>
       )}
 
       {filteredContracts.map((contract) => {

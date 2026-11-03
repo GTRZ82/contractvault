@@ -122,8 +122,27 @@ input[type="file"] { border: 0; padding: 6px 0; }
 .overview-section { min-height: 188px; box-shadow: 0 4px 16px rgba(30, 58, 95, 0.05); }
 .overview-section > h3 { color: #1e3a5f !important; }
 .overview-section > div { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-.metric-card { position: relative; display: flex; min-height: 118px; flex-direction: column; align-items: center; justify-content: center; background: #fff !important; box-shadow: 0 3px 10px rgba(30, 58, 95, 0.04); }
-.metric-card::before { content: ''; width: 8px; height: 8px; position: absolute; top: 10px; right: 10px; border-radius: 50%; }
+.metric-card { position: relative; display: flex; min-height: 118px; flex-direction: column; align-items: center; justify-content: center; background: #fff !important; box-shadow: 0 3px 10px rgba(30, 58, 95, 0.04); cursor: pointer; transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.metric-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(30, 58, 95, 0.10); border-color: #94a3b8 !important; }
+.metric-card:focus-visible { outline: 3px solid rgba(37, 99, 235, .30); outline-offset: 3px; border-color: #64748b !important; }
+.metric-card { overflow: visible; }
+.metric-card-action {
+  display: block !important;
+  flex: none;
+  visibility: visible !important;
+  opacity: 1 !important;
+  overflow: visible;
+  margin-top: 2px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 12px;
+  letter-spacing: 0.02em;
+  transition: color .15s ease, transform .15s ease;
+}
+.metric-card:hover .metric-card-action,
+.metric-card:focus-visible .metric-card-action { color: #334155; transform: translateX(2px); }
+.metric-card::before { content: ''; width: 8px; height: 8px; position: absolute; top: 10px; right: 10px; border-radius: 50%; pointer-events: none; }
 .metric-green::before { background: #22a06b; }
 .metric-amber::before { background: #d97706; }
 .metric-red::before { background: #dc2626; }
