@@ -1,6 +1,8 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.117.2'
 import {
   getCorsHeaders,
+  getSafeAzureErrorCode,
+  logOcrDiagnostic,
   pollAzureRead,
   submitAzureRead,
   validateImage,
@@ -66,13 +68,18 @@ Deno.serve(async (request) => {
 
   const endpoint = Deno.env.get('AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT')?.replace(/\/$/, '')
   const key = Deno.env.get('AZURE_DOCUMENT_INTELLIGENCE_KEY')
-  if (!endpoint || !key) return errorResponse('OCR_PROVIDER_ERROR', 500, origin)
+  if (!endpoint || !key) {
+    logOcrDiagnostic('azure-config', 'missing-azure-configuration')
+    return errorResponse('OCR_PROVIDER_ERROR', 500, origin)
+  }
   try {
     const endpointUrl = new URL(endpoint)
     if (endpointUrl.protocol !== 'https:' || endpointUrl.username || endpointUrl.password) {
+      logOcrDiagnostic('azure-config', 'invalid-azure-endpoint')
       return errorResponse('OCR_PROVIDER_ERROR', 500, origin)
     }
   } catch {
+    logOcrDiagnostic('azure-config', 'invalid-azure-endpoint')
     return errorResponse('OCR_PROVIDER_ERROR', 500, origin)
   }
 
@@ -97,15 +104,20 @@ Deno.serve(async (request) => {
   const submitResponse = submission.response
 
   if (submitResponse.status === 401 || submitResponse.status === 403) {
+    const azureErrorCode = getSafeAzureErrorCode(submitResponse.headers.get('x-ms-error-code'))
+    logOcrDiagnostic('azure-analyze-submit', 'azure-authentication-failure', submitResponse.status, azureErrorCode)
     return errorResponse('OCR_UNAUTHORIZED', 502, origin)
   }
   if (!submitResponse.ok && submitResponse.status !== 202) {
+    const azureErrorCode = getSafeAzureErrorCode(submitResponse.headers.get('x-ms-error-code'))
+    logOcrDiagnostic('azure-analyze-submit', 'azure-http-failure', submitResponse.status, azureErrorCode)
     return errorResponse('OCR_PROVIDER_ERROR', 502, origin)
   }
 
   const operationLocation = submitResponse.headers.get('Operation-Location') ??
     submitResponse.headers.get('operation-location')
   if (!validateOperationLocation(operationLocation, endpoint)) {
+    logOcrDiagnostic('azure-operation-location', 'missing-or-invalid-operation-location', submitResponse.status)
     return errorResponse('OCR_PROVIDER_ERROR', 502, origin)
   }
 
@@ -118,6 +130,9 @@ Deno.serve(async (request) => {
     request.signal,
   )
   if (!result.ok) {
+    if (result.code === 'OCR_TIMEOUT') {
+      logOcrDiagnostic('azure-polling', 'timeout')
+    }
     return errorResponse(result.code, result.code === 'OCR_TIMEOUT' ? 504 : 502, origin)
   }
   return new Response(JSON.stringify({ text: result.text, pages: 1 }), {

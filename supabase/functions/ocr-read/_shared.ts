@@ -7,6 +7,36 @@ export const ALLOWED_OCR_ORIGINS = new Set([
   'https://contractvault-git-feature-photo-ocr-milestone-1-gtrz-82.vercel.app',
 ])
 
+const ALLOWED_AZURE_ERROR_CODES = new Set([
+  'InvalidArgument',
+  'InvalidRequest',
+  'InvalidImage',
+  'ImageSizeLimitExceeded',
+  'NotSupported',
+  'Unauthorized',
+  'Forbidden',
+  'TooManyRequests',
+  'InternalServerError',
+  'ServiceUnavailable',
+  'OperationFailed',
+])
+
+export function getSafeAzureErrorCode(value: string | null) {
+  return value && ALLOWED_AZURE_ERROR_CODES.has(value) ? value : undefined
+}
+
+export function logOcrDiagnostic(
+  stage: string,
+  category: string,
+  status?: number,
+  azureErrorCode?: string,
+) {
+  const diagnostic: Record<string, string | number> = { stage, category }
+  if (typeof status === 'number') diagnostic.status = status
+  if (azureErrorCode) diagnostic.azureErrorCode = azureErrorCode
+  console.error(diagnostic)
+}
+
 export function getCorsHeaders(origin: string | null) {
   const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': 'OPTIONS, POST',
@@ -128,7 +158,11 @@ export async function submitAzureRead(
     if (controller.signal.aborted || clientSignal?.aborted) return { ok: false as const, code: 'OCR_TIMEOUT' as OcrErrorCode }
     return { ok: true as const, response }
   } catch {
-    if (controller.signal.aborted || clientSignal?.aborted) return { ok: false as const, code: 'OCR_TIMEOUT' as OcrErrorCode }
+    if (controller.signal.aborted || clientSignal?.aborted) {
+      logOcrDiagnostic('azure-analyze-submit', 'timeout')
+      return { ok: false as const, code: 'OCR_TIMEOUT' as OcrErrorCode }
+    }
+    logOcrDiagnostic('azure-analyze-submit', 'network-failure')
     return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
   } finally {
     clearTimeout(timeout)
@@ -162,22 +196,46 @@ export async function pollAzureRead(
     } catch {
       clearTimeout(individualTimeout)
       clientSignal?.removeEventListener('abort', cancelClient)
-      if (controller.signal.aborted || clientSignal?.aborted) return { ok: false as const, code: 'OCR_TIMEOUT' as OcrErrorCode }
+      if (controller.signal.aborted || clientSignal?.aborted) {
+        logOcrDiagnostic('azure-polling', 'timeout')
+        return { ok: false as const, code: 'OCR_TIMEOUT' as OcrErrorCode }
+      }
+      logOcrDiagnostic('azure-polling', 'network-failure')
       return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
     }
     clearTimeout(individualTimeout)
     clientSignal?.removeEventListener('abort', cancelClient)
-    if (!response.ok) return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
+    if (!response.ok) {
+      logOcrDiagnostic('azure-polling', 'http-failure', response.status)
+      return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
+    }
     const result = await response.json().catch(() => null) as { status?: string; analyzeResult?: { content?: string } } | null
-    if (!result) return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
+    if (!result || typeof result !== 'object') {
+      logOcrDiagnostic('azure-polling', 'malformed-json', response.status)
+      return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
+    }
     const status = result.status?.toLowerCase()
     if (status === 'succeeded') {
+      if (!result.analyzeResult || typeof result.analyzeResult !== 'object') {
+        logOcrDiagnostic('azure-polling', 'malformed-final-result', response.status)
+        return { ok: false as const, code: 'OCR_NO_TEXT' as OcrErrorCode }
+      }
       const text = getTextFromAzureResult(result)
-      return text
-        ? { ok: true as const, text }
-        : { ok: false as const, code: 'OCR_NO_TEXT' as OcrErrorCode }
+      if (text) return { ok: true as const, text }
+      logOcrDiagnostic(
+        'azure-polling',
+        typeof result.analyzeResult.content === 'string' ? 'no-usable-ocr-text' : 'malformed-final-result',
+        response.status,
+      )
+      return { ok: false as const, code: 'OCR_NO_TEXT' as OcrErrorCode }
     }
-    if (status === 'failed') return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
+    if (status === 'failed') {
+      logOcrDiagnostic('azure-polling', 'analysis-failed', response.status)
+      return { ok: false as const, code: 'OCR_PROVIDER_ERROR' as OcrErrorCode }
+    }
+    if (!status || (status !== 'running' && status !== 'notstarted')) {
+      logOcrDiagnostic('azure-polling', 'malformed-polling-response', response.status)
+    }
   }
   return { ok: false as const, code: 'OCR_TIMEOUT' as OcrErrorCode }
 }
