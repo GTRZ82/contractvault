@@ -4,6 +4,7 @@ export const OCR_MAX_BODY_BYTES = 4.5 * 1024 * 1024
 export const ALLOWED_OCR_ORIGINS = new Set([
   'http://localhost:5173',
   'https://contractvault-puce.vercel.app',
+  'https://contractvault-git-feature-photo-ocr-milestone-1-gtrz-82.vercel.app',
 ])
 
 export function getCorsHeaders(origin: string | null) {
