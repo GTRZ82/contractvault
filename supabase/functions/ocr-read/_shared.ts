@@ -182,6 +182,7 @@ export async function submitAzureRead(
 
 export async function pollAzureRead(
   operationLocation: string,
+  key: string,
   fetchImpl: typeof fetch = fetch,
   startedAt = Date.now(),
   overallDeadlineMs = 58_000,
@@ -202,7 +203,11 @@ export async function pollAzureRead(
     clientSignal?.addEventListener('abort', cancelClient, { once: true })
     const individualTimeout = setTimeout(() => controller.abort(), 10_000)
     try {
-      response = await fetchImpl(operationLocation, { method: 'GET', signal: controller.signal })
+      response = await fetchImpl(operationLocation, {
+        method: 'GET',
+        headers: { 'Ocp-Apim-Subscription-Key': key },
+        signal: controller.signal,
+      })
     } catch {
       clearTimeout(individualTimeout)
       clientSignal?.removeEventListener('abort', cancelClient)

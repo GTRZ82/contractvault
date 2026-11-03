@@ -124,6 +124,7 @@ Deno.serve(async (request) => {
   if (Date.now() - startedAt >= deadlineMs) return errorResponse('OCR_TIMEOUT', 504, origin)
   const result = await pollAzureRead(
     operationLocation as string,
+    key,
     fetch,
     startedAt,
     58_000,

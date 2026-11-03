@@ -74,14 +74,46 @@ describe('OCR Edge Function validation', () => {
   })
 
   it('returns OCR_TIMEOUT after the bounded timeout', async () => {
-    const result = await pollAzureRead('https://example.invalid/status', vi.fn(), Date.now() - 58_000)
+    const result = await pollAzureRead('https://example.invalid/status', 'synthetic-key', vi.fn(), Date.now() - 58_000)
     expect(result).toEqual({ ok: false, code: 'OCR_TIMEOUT' })
   })
 
   it('returns provider failure for a failed Azure operation', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'failed' }), { status: 200 }))
-    const result = await pollAzureRead('https://example.invalid/status', fetchMock, Date.now() - 1000)
+    const result = await pollAzureRead('https://example.invalid/status', 'synthetic-key', fetchMock, Date.now() - 1000)
     expect(result).toEqual({ ok: false, code: 'OCR_PROVIDER_ERROR' })
+  })
+
+  it('includes the Azure subscription key on every polling GET', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'succeeded',
+        analyzeResult: { content: 'synthetic text' },
+      }), { status: 200 }))
+
+    const request = pollAzureRead(
+      'https://example.azure.com/status/1',
+      'synthetic-key',
+      fetchMock as typeof fetch,
+      Date.now(),
+      58_000,
+    )
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(request).resolves.toEqual({ ok: true, text: 'synthetic text' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const call of fetchMock.mock.calls) {
+      const [url, init] = call
+      expect(url).toBe('https://example.azure.com/status/1')
+      expect(init?.method).toBe('GET')
+      expect(init?.headers).toEqual({
+        'Ocp-Apim-Subscription-Key': 'synthetic-key',
+      })
+    }
+    vi.useRealTimers()
   })
 
   it('returns required CORS headers for allowlisted and unknown origins', () => {
@@ -133,6 +165,7 @@ describe('OCR Edge Function validation', () => {
     }))
     const request = pollAzureRead(
       'https://example.azure.com/status/1',
+      'synthetic-key',
       stalledFetch as typeof fetch,
       Date.now(),
       58_000,
