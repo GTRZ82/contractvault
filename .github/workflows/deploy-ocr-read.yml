@@ -73,4 +73,5 @@ jobs:
         run: |
           supabase functions deploy ocr-read \
             --remote="$SUPABASE_PROJECT_ID" \
-            --use-api
+            --use-api \
+            --yes
