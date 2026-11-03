@@ -62,9 +62,9 @@ jobs:
           grep -Fqx 'verify_jwt = true' supabase/config.toml
 
       - name: Install pinned Supabase CLI
-        uses: supabase/setup-cli@d347ba47d3fb7eeeddbbc793bc8d4779caf773ea
+        uses: supabase/setup-cli@v3
         with:
-          version: v3.0.0
+          version: latest
 
       - name: Deploy OCR Read only
         env:
